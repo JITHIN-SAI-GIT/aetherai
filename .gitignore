@@ -1,0 +1,33 @@
+# Virtual environments
+backend/venv/
+backend/.venv/
+venv/
+.venv/
+ENV/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.pytest_cache/
+backend/.pytest_cache/
+
+# Node modules
+project/node_modules/
+node_modules/
+
+# Environment files
+.env
+backend/.env
+**/.env
+**/.env.local
+
+# IDE/Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp

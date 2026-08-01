@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+httpx
+pytest
+
+motor
+pymongo
+
+openai
+anthropic
+google-genai
+groq
+duckduckgo-search>=6.0.0
