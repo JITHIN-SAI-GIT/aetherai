@@ -15,3 +15,4 @@ groq
 duckduckgo-search>=6.0.0
 pytest-asyncio
 python-dotenv
+h2>=4.1.0
