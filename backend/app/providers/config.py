@@ -16,8 +16,8 @@ class ProviderConfig(BaseSettings):
 
     # Circuit breaker
     retry_count:        int = 3
-    circuit_threshold:  int = 3    # failures before circuit opens
-    circuit_cooldown:   int = 60   # seconds before retry
+    circuit_threshold:  int = 5    # failures before circuit opens (raised from 3 — brief 429 bursts shouldn't lock a provider)
+    circuit_cooldown:   int = 15   # seconds before retry (reduced from 60 — recover fast after rate-limit spikes)
 
     # Default max output tokens (latency cap)
     default_max_tokens: int = 450

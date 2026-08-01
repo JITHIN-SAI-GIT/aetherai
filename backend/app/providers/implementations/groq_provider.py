@@ -13,7 +13,7 @@ from app.config.settings import get_settings
 
 logger = logging.getLogger("provider.groq")
 
-_TIMEOUT = 2.5   # seconds — Groq is fast; fail fast to fall to next provider
+_TIMEOUT = 5.0   # seconds — raised from 2.5s; Groq is fast but brief slowdowns shouldn't open the circuit
 
 class GroqProvider:
     def __init__(self):

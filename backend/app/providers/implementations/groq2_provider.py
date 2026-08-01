@@ -15,7 +15,7 @@ from app.config.settings import get_settings
 
 logger = logging.getLogger("provider.groq2")
 
-_TIMEOUT = 2.5
+_TIMEOUT = 5.0  # raised from 2.5s — see groq_provider.py for rationale
 
 
 class Groq2Provider:
