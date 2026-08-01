@@ -124,21 +124,38 @@ export async function fetchSearchMetrics() {
   }
 }
 
+// Client-side timeout (ms) — fires slightly after the backend's 14s streaming wall-clock limit.
+// This is a last-resort safety net: the frontend should never trust the backend alone to
+// end a loading state.
+const STREAM_CLIENT_TIMEOUT_MS = 20_000;
+
 export async function streamChatCompletion(
   request: ChatCompletionRequest,
   onChunk: (text: string) => void,
   onComplete: () => void,
   onError: (error: Error) => void
 ) {
+  // Build a composite AbortSignal: the caller's signal OR our own timeout signal.
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => {
+    timeoutController.abort(new Error('client_timeout'));
+  }, STREAM_CLIENT_TIMEOUT_MS);
+
+  // Combine caller signal with our timeout signal
+  const { signal: callerSignal, ...bodyParams } = request;
+  const signals = [timeoutController.signal, callerSignal].filter(Boolean) as AbortSignal[];
+  const combinedSignal = signals.length === 1
+    ? signals[0]
+    : AbortSignal.any
+      ? AbortSignal.any(signals)
+      : signals[0]; // fallback for older browsers
+
   try {
-    const { signal, ...bodyParams } = request;
     const res = await fetch(`${API_BASE}/v1/chat/completions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...bodyParams, stream: true }),
-      signal,
+      signal: combinedSignal,
     });
 
     if (!res.ok) {
@@ -152,14 +169,15 @@ export async function streamChatCompletion(
     const reader = res.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
+    let receivedContentChunks = 0; // track whether any real content arrived
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      
+
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
-      
+
       // keep the last incomplete line in the buffer
       buffer = lines.pop() || '';
 
@@ -173,6 +191,7 @@ export async function streamChatCompletion(
             const parsed = JSON.parse(data);
             const content = parsed.choices?.[0]?.delta?.content || '';
             if (content) {
+              receivedContentChunks++;
               onChunk(content);
             }
           } catch (e) {
@@ -181,12 +200,27 @@ export async function streamChatCompletion(
         }
       }
     }
-    onComplete();
+
+    // If the stream ended cleanly but no content was ever received, treat it as an error.
+    // This happens when the backend drops the connection (provider crash) or sends no chunks.
+    if (receivedContentChunks === 0) {
+      onError(new Error('empty_stream: The backend returned no content. All providers may be rate-limited — please try again.'));
+    } else {
+      onComplete();
+    }
   } catch (err: any) {
     if (err.name === 'AbortError') {
-      console.log('Stream request aborted cleanly.');
-      return; // Do not call onError if it's an intentional abort
+      // Distinguish intentional user-abort from our own timeout abort
+      if (timeoutController.signal.aborted) {
+        onError(new Error('timeout: The request timed out after 20s. Please try again.'));
+      } else {
+        console.log('Stream request aborted cleanly by user.');
+      }
+      return;
     }
     onError(err instanceof Error ? err : new Error(String(err)));
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
+

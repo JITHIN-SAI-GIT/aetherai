@@ -40,7 +40,16 @@ export function useChat() {
           if (stopRef.current) return;
           if (error.name === 'AbortError') return;
 
-          if (retryCount < 3) {
+          // Timeout and empty-stream errors: do NOT retry — each retry would waste another
+          // 14–20s. Show the error immediately and clearly.
+          const isTimeoutOrEmpty =
+            error.message.startsWith('timeout:') ||
+            error.message.startsWith('empty_stream:') ||
+            error.message.includes('504') ||
+            error.message.includes('timed out') ||
+            error.message.includes('rate-limited');
+
+          if (!isTimeoutOrEmpty && retryCount < 3) {
             const delay = Math.pow(2, retryCount) * 1000;
             console.warn(`Streaming failed. Retrying in ${delay}ms... (Attempt ${retryCount + 1}/3)`);
             setTimeout(() => {
@@ -49,10 +58,16 @@ export function useChat() {
             return;
           }
 
+          // Always show a non-empty, human-readable error so the user is never
+          // left with a blank or stuck "Thinking..." message.
+          const userMessage = isTimeoutOrEmpty
+            ? '⚠️ The request timed out — all AI providers may be busy. Please try again in a moment.'
+            : '⚠️ Failed to connect to the AI after multiple attempts. Please check your connection and try again.';
+
           store.updateMessage(convId, assistantMsgId, (m) => ({
             ...m,
             status: 'error',
-            content: m.content || 'Error: Failed to connect to the backend API after retries.',
+            content: m.content || userMessage,
           }));
           store.setIsStreaming(false);
           abortControllerRef.current = null;
@@ -64,6 +79,7 @@ export function useChat() {
       }
     }
   }, [store]);
+
 
   const sendMessage = useCallback(
     async (text: string) => {

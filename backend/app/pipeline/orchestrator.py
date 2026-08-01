@@ -53,15 +53,21 @@ class Orchestrator:
             raw_request=request,
         )
         import asyncio
-        from fastapi import HTTPException
 
         try:
             context = await asyncio.wait_for(self._pipeline.run(context), timeout=12.0)
         except asyncio.TimeoutError:
             logger.error("Pipeline execution timed out — returning graceful fallback", extra={"request_id": request_id})
             if request.stream:
-                raise HTTPException(status_code=504, detail="Request timed out. Please try again.")
-            
+                # For streaming requests: never raise HTTP 504.
+                # Instead, return a one-shot async generator that yields the timeout
+                # message as an SSE content chunk.  The sse_stream_generator will
+                # wrap it and send [DONE] — so the client always gets a clean stream end.
+                async def _timeout_stream():
+                    yield "⚠️ The request took too long to respond — all AI providers may be busy. Please try again in a moment."
+
+                return _timeout_stream()
+
             # Non-streaming fallback
             context.provider_response = ProviderResponse(
                 provider="timeout_fallback",
@@ -73,7 +79,7 @@ class Orchestrator:
                 status=504,
             )
             context.degraded = True
-            
+
             from app.pipeline.formatter import Formatter
             context = Formatter().format(context)
 
@@ -81,3 +87,4 @@ class Orchestrator:
             return context.provider_response
 
         return context.formatted_response
+
