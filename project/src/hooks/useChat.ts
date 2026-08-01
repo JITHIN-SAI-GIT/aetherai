@@ -45,6 +45,7 @@ export function useChat() {
           const isTimeoutOrEmpty =
             error.message.startsWith('timeout:') ||
             error.message.startsWith('empty_stream:') ||
+            error.message.startsWith('stream_error:') ||
             error.message.includes('504') ||
             error.message.includes('timed out') ||
             error.message.includes('rate-limited');
@@ -58,8 +59,10 @@ export function useChat() {
             return;
           }
 
-          // Always show a non-empty, human-readable error so the user is never
-          // left with a blank or stuck "Thinking..." message.
+          // For stream_error events, the message arrived mid-stream — REPLACE
+          // the partial content rather than appending the error to it.
+          // For other errors (timeout, 504) there may be no partial content yet.
+          const isStreamError = error.message.startsWith('stream_error:');
           const userMessage = isTimeoutOrEmpty
             ? '⚠️ The request timed out — all AI providers may be busy. Please try again in a moment.'
             : '⚠️ Failed to connect to the AI after multiple attempts. Please check your connection and try again.';
@@ -67,10 +70,12 @@ export function useChat() {
           store.updateMessage(convId, assistantMsgId, (m) => ({
             ...m,
             status: 'error',
-            content: m.content || userMessage,
+            // stream_error: replace partial content entirely; other errors: keep any partial content
+            content: isStreamError ? userMessage : (m.content || userMessage),
           }));
           store.setIsStreaming(false);
           abortControllerRef.current = null;
+
         }
       );
     } catch (err: any) {

@@ -10,6 +10,67 @@ logger = logging.getLogger("pipeline")
 # 16 messages = 8 back-and-forth turns (system prompt excluded from count).
 MAX_MESSAGES_TO_LLM = 16
 
+# Token budget for the final assembled prompt sent to any provider.
+# Leaves generous headroom for the 450-token output cap while staying safely
+# within Groq's context window and its 5s per-request timeout.
+# Multilingual (Hindi / Telugu / CJK) text is ~2-4x more token-dense than
+# English for the same character count, so a naive message-count cap is
+# insufficient — this budget catches those cases.
+MAX_PROMPT_TOKENS = 3500
+
+
+def _estimate_tokens(text: str) -> int:
+    """
+    Lightweight token estimator without a tokenizer dependency.
+    Uses character-to-token ratios that are empirically accurate to ±20%:
+      - ASCII / Latin:   ~4 chars per token  (ratio = 0.25)
+      - Non-ASCII (CJK, Devanagari, Arabic, etc.): ~1.5 chars per token (ratio ≈ 0.67)
+    We detect non-ASCII dominance by checking if >30% of chars are non-ASCII.
+    """
+    if not text:
+        return 0
+    non_ascii = sum(1 for c in text if ord(c) > 127)
+    ratio = 0.6 if non_ascii / max(len(text), 1) > 0.3 else 0.25
+    return max(1, int(len(text) * ratio))
+
+
+def _count_prompt_tokens(messages: list) -> int:
+    """Estimate total token count for a list of messages."""
+    total = 0
+    for msg in messages:
+        content = msg.get("content") or ""
+        total += _estimate_tokens(content) + 4  # ~4 overhead tokens per message
+    return total
+
+
+def _trim_to_token_budget(messages: list, budget: int = MAX_PROMPT_TOKENS) -> list:
+    """
+    Progressively remove the *oldest non-system* messages until the estimated
+    token count fits within `budget`. Always preserves:
+      - The system message (index 0 if role=="system")
+      - The final user message (index -1)
+    """
+    if _count_prompt_tokens(messages) <= budget:
+        return messages
+
+    has_system = messages and messages[0].get("role") == "system"
+    system_part = [messages[0]] if has_system else []
+    history     = list(messages[1:] if has_system else messages)
+
+    while len(history) > 1 and _count_prompt_tokens(system_part + history) > budget:
+        history.pop(0)  # remove oldest turn
+
+    trimmed = system_part + history
+    logger.info(
+        "Token budget applied — trimmed conversation history",
+        extra={
+            "estimated_tokens": _count_prompt_tokens(trimmed),
+            "budget": budget,
+            "messages_kept": len(trimmed),
+        },
+    )
+    return trimmed
+
 
 def _slice_messages(messages: list, max_count: int = MAX_MESSAGES_TO_LLM) -> list:
     """
@@ -178,8 +239,22 @@ class Pipeline:
                     },
                 )
 
-                # Apply message window slicing BEFORE the provider call
+                # Apply message window slicing then token-budget trimming.
+                # Step 1: cap by message count (fast O(n) operation)
                 llm_messages = _slice_messages(context.messages)
+                # Step 2: cap by estimated token count — catches multilingual
+                # (Hindi/Telugu/CJK) conversations where character-dense scripts
+                # produce far more tokens than an equivalent English history.
+                llm_messages = _trim_to_token_budget(llm_messages)
+
+                logger.info(
+                    "Final prompt assembled",
+                    extra={
+                        "request_id": context.request_id,
+                        "messages": len(llm_messages),
+                        "estimated_tokens": _count_prompt_tokens(llm_messages),
+                    },
+                )
 
                 if context.stream:
                     context.provider_response = self.provider_manager.stream(

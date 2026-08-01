@@ -149,9 +149,21 @@ class ProviderManager:
     ):
         """
         Return an async generator that streams from the first available provider.
-        Uses the same circuit-breaker logic as generate().
+        Uses circuit-breaker logic + buffer-then-passthrough to prevent garbled
+        output when a provider fails mid-stream.
+
+        Strategy:
+          - Buffer the first BUFFER_TOKENS tokens internally before yielding any
+            to the client.
+          - If the provider raises during buffering → discard buffer, try next
+            provider cleanly (client never sees partial tokens from a failed attempt).
+          - Once buffering succeeds → flush buffer then switch to direct pass-through.
         """
         effective_max_tokens = max_tokens or DEFAULT_MAX_TOKENS
+        # Number of tokens to buffer before committing to a provider.
+        # 15 tokens ≈ 60-100ms at Groq speed — imperceptible latency,
+        # but enough to catch early failures before anything is shown.
+        BUFFER_TOKENS = 15
 
         async def _inner():
             last_error = None
@@ -162,19 +174,60 @@ class ProviderManager:
                         extra={"provider": entry.name()},
                     )
                     continue
-                try:
-                    logger.info("Streaming from provider", extra={"provider": entry.name()})
-                    # Resolve supported model name for this provider
-                    provider_model = model
-                    if model not in entry.provider.model_list():
-                        provider_model = entry.provider.model_list()[0]
 
-                    async for chunk in entry.provider.stream(
-                        messages=messages,
-                        model=provider_model,
-                        max_tokens=effective_max_tokens,
-                        **kwargs,
-                    ):
+                # Resolve supported model name for this provider
+                provider_model = model
+                if model not in entry.provider.model_list():
+                    provider_model = entry.provider.model_list()[0]
+
+                logger.info("Streaming from provider", extra={"provider": entry.name()})
+
+                # ── Phase 1: Buffer BUFFER_TOKENS tokens before yielding ──────
+                # If the provider fails during this phase, nothing has been sent
+                # to the client, so we can safely try the next provider.
+                buffer: List[str] = []
+                buffering_failed = False
+                provider_gen = entry.provider.stream(
+                    messages=messages,
+                    model=provider_model,
+                    max_tokens=effective_max_tokens,
+                    **kwargs,
+                )
+                try:
+                    async for chunk in provider_gen:
+                        buffer.append(chunk)
+                        if len(buffer) >= BUFFER_TOKENS:
+                            break  # buffering phase complete — commit to this provider
+                except ProviderAuthError as e:
+                    for _ in range(FAILURE_THRESHOLD):
+                        entry.breaker.record_failure()
+                    logger.warning(
+                        "Provider auth failure during buffer phase — trying next",
+                        extra={"provider": entry.name(), "error": str(e)},
+                    )
+                    last_error = e
+                    buffering_failed = True
+                except Exception as e:
+                    entry.breaker.record_failure()
+                    logger.warning(
+                        "Provider failed during buffer phase — trying next (client saw 0 tokens)",
+                        extra={"provider": entry.name(), "error": str(e)},
+                    )
+                    last_error = e
+                    buffering_failed = True
+
+                if buffering_failed:
+                    continue  # clean retry — client has seen nothing from this provider
+
+                # ── Phase 2: Flush buffer then pass-through ───────────────────
+                # We've committed to this provider. Yield buffered tokens first,
+                # then stream the rest directly. Any exception here is caught by
+                # sse_stream_generator's outer try/except and emits a clean error chunk.
+                for buffered_chunk in buffer:
+                    yield buffered_chunk
+
+                try:
+                    async for chunk in provider_gen:
                         yield chunk
                     entry.breaker.record_success()
                     return
@@ -182,11 +235,17 @@ class ProviderManager:
                     for _ in range(FAILURE_THRESHOLD):
                         entry.breaker.record_failure()
                     last_error = e
-                    continue
+                    # Re-raise so sse_stream_generator shows error chunk
+                    raise NoAvailableProviderError(
+                        f"Provider {entry.name()} auth failed mid-stream: {e}"
+                    )
                 except Exception as e:
                     entry.breaker.record_failure()
                     last_error = e
-                    continue
+                    raise NoAvailableProviderError(
+                        f"Provider {entry.name()} failed mid-stream after committing: {e}"
+                    )
+
             raise NoAvailableProviderError(
                 f"All providers exhausted for streaming. Last error: {last_error}"
             )

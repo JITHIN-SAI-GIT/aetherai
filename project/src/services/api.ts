@@ -181,12 +181,41 @@ export async function streamChatCompletion(
       // keep the last incomplete line in the buffer
       buffer = lines.pop() || '';
 
+      let currentEvent = 'message'; // default SSE event type
+
       for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          // Named SSE event — set type for the following data line
+          currentEvent = line.slice(7).trim();
+          continue;
+        }
+
+        if (line === '') {
+          // Empty line = end of SSE event block, reset event type
+          currentEvent = 'message';
+          continue;
+        }
+
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
           if (data === '[DONE]') {
+            currentEvent = 'message';
             continue;
           }
+
+          // Handle backend error control events — replace partial message, don't append
+          if (currentEvent === 'error') {
+            try {
+              const errPayload = JSON.parse(data);
+              onError(new Error(`stream_error: ${errPayload.message || 'An error occurred.'}`));
+            } catch {
+              onError(new Error('stream_error: An unexpected error occurred.'));
+            }
+            currentEvent = 'message';
+            continue;
+          }
+
+          // Normal content chunk
           try {
             const parsed = JSON.parse(data);
             const content = parsed.choices?.[0]?.delta?.content || '';
