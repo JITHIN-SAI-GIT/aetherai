@@ -7,7 +7,11 @@ async def setup_indexes():
     """
     Creates standard indexes for MongoDB Atlas collections.
     """
-    db = get_db()
+    try:
+        db = get_db()
+    except RuntimeError as e:
+        logger.warning(f"Skipping index setup: {e}")
+        return
     logger.info("Setting up MongoDB indexes...")
 
     try:
