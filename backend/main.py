@@ -64,9 +64,13 @@ app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
 
 # Middleware
+allowed_origins = [settings.frontend_origin] if settings.frontend_origin else ["*"]
+if settings.env in ("development", "test") or not settings.frontend_origin:
+    allowed_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For local dev
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

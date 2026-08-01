@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     mongodb_uri:   str = "mongodb://localhost:27017"
     database_name: str = "aether"
+    frontend_origin: str = "*"
 
     # Provider API Keys
     openai_api_key:     str | None = None

@@ -34,6 +34,9 @@ async def get_db_health():
 @router.get("/health", response_model=HealthResponse)
 async def health_check(settings: Settings = Depends(get_settings)):
     db_info = await get_db_health()
+    if not db_info["db_connected"]:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="Database connection failed")
     return HealthResponse(
         status="healthy",
         version=settings.version,

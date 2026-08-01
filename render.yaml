@@ -1,0 +1,45 @@
+services:
+  # ---------- BACKEND ----------
+  - type: web
+    name: aether-ai-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_API_KEY_2
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: FRONTEND_ORIGIN
+        value: https://aether-ai-frontend.onrender.com
+      - key: SEC_API_KEYS_ENABLED
+        value: "false"
+      - key: PYTHON_VERSION
+        value: 3.11.9
+
+  # ---------- FRONTEND ----------
+  - type: web
+    name: aether-ai-frontend
+    runtime: static
+    plan: free
+    rootDir: project
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://aether-ai-backend.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

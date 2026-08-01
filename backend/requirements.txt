@@ -13,3 +13,5 @@ anthropic
 google-genai
 groq
 duckduckgo-search>=6.0.0
+pytest-asyncio
+python-dotenv
